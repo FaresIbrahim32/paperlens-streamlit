@@ -67,7 +67,8 @@ def extract_pdf(uploaded_file) -> tuple[str, int]:
 def clean_text(text: str) -> str:
     text = text.replace("\x00", " ")
     text = re.sub(r"-\n(?=[a-z])", "", text)
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -95,30 +96,64 @@ def extract_highlights(text: str, limit: int = 6) -> list[str]:
     return [s for _, s in sorted(scored, reverse=True)[:limit]]
 
 
+def section_excerpt(text: str, label: str, next_labels: Iterable[str]) -> str:
+    """Find a likely paper section without pretending to understand missing text."""
+    following = "|".join(re.escape(item) for item in next_labels)
+    match = re.search(
+        rf"\b{re.escape(label)}\b\s*(.*?)(?=\b(?:{following})\b|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def best_sentences(text: str, limit: int, cues: Iterable[str] = ()) -> list[str]:
+    items = sentences(text)
+    if not items:
+        return []
+    cue_set = {cue.lower() for cue in cues}
+    scored = []
+    for index, sentence in enumerate(items):
+        lower = sentence.lower()
+        score = sum(lower.count(cue) for cue in cue_set) * 3
+        score += min(len(sentence.split()) / 45, 1.0)
+        if index == 0:
+            score += 0.5
+        scored.append((score, sentence))
+    return [sentence for _, sentence in sorted(scored, reverse=True)[:limit]]
+
+
 def extractive_summary(text: str, detail: str) -> str:
-    """Hosted-safe, evidence-first summary that needs no model download."""
+    """Hosted-safe, paper-specific digest that needs no model download."""
     items = sentences(text)
     if not items:
         return "Not enough selectable text was found to summarize this paper."
+    count = 5 if detail == "Detailed" else 3 if detail == "Balanced" else 2
+    abstract = section_excerpt(text, "abstract", ("keywords", "introduction", "background", "1 introduction"))
+    methods = section_excerpt(text, "methods", ("results", "findings", "experiments", "discussion", "conclusion"))
+    results = section_excerpt(text, "results", ("discussion", "limitations", "conclusion", "references"))
+    limitations = section_excerpt(text, "limitations", ("conclusion", "references"))
+    conclusion = section_excerpt(text, "conclusion", ("references", "acknowledgements"))
+    overview = abstract or " ".join(items[:3])
+    method_sentences = best_sentences(methods or text, count, ("dataset", "participants", "sample", "model", "experiment", "analysis", "trained"))
+    result_sentences = best_sentences(results or text, count + 1, ("result", "found", "showed", "significant", "effect", "increase", "decrease", "improve", "outperform"))
+    limitation_sentences = best_sentences(limitations or text, min(count, 3), ("limit", "future", "caveat", "however", "bias", "cannot", "small sample"))
+    conclusion_sentences = best_sentences(conclusion or text, count, ("conclude", "suggest", "demonstrate", "implication", "future", "important"))
     highlights = extract_highlights(text, 10 if detail == "Detailed" else 7 if detail == "Balanced" else 5)
-    method_terms = ("method", "methods", "experiment", "dataset", "participants", "sample", "analysis")
-    result_terms = ("result", "found", "showed", "significant", "effect", "increase", "decrease", "conclude")
-    method = next((s for s in items if any(term in s.lower() for term in method_terms)), None)
-    findings = [s for s in highlights if any(term in s.lower() for term in result_terms)]
-    if not findings:
-        findings = highlights[:3]
-    overview = " ".join(items[:2])
     lines = [
-        "## Plain-English overview",
+        "## Paper-specific overview",
         overview,
         "",
-        "## What the paper did",
-        method or "The extracted paper text does not contain a clearly labeled methods sentence.",
-        "",
-        "## Evidence and findings",
+        "## What the researchers did",
     ]
-    lines.extend(f"- {sentence}" for sentence in findings[:5])
-    lines.extend(["", "## High-signal passages"])
+    lines.extend(f"- {sentence}" for sentence in method_sentences)
+    lines.extend(["", "## Main results"])
+    lines.extend(f"- {sentence}" for sentence in result_sentences)
+    lines.extend(["", "## Limitations and caveats"])
+    lines.extend(f"- {sentence}" for sentence in limitation_sentences)
+    lines.extend(["", "## Bottom line"])
+    lines.extend(f"- {sentence}" for sentence in conclusion_sentences)
+    lines.extend(["", "## High-signal passages from the source"])
     lines.extend(f"- {sentence}" for sentence in highlights)
     return "\n".join(lines)
 
