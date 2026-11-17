@@ -207,6 +207,12 @@ with left:
                 raw_text, page_count = uploaded.getvalue().decode("utf-8", errors="ignore"), None
             paper = Paper(uploaded.name, clean_text(raw_text), page_count)
             st.session_state.paper = paper
+        except ModuleNotFoundError as exc:
+            st.error(
+                "The PDF reader dependency is not installed. Run "
+                "`python -m pip install -r requirements.txt`, then restart Streamlit. "
+                f"Missing module: `{exc.name}`"
+            )
         except Exception as exc:
             st.error(f"Could not read this file: {exc}")
 

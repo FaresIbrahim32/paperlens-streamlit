@@ -20,9 +20,11 @@ The `mobile/` folder is an older Expo sample and is not the current primary prot
 `streamlit_app.py` is a local long-paper summarizer built from the pipeline in `/Users/Fares/Downloads/Untitled25.ipynb`. It accepts PDF or TXT uploads, extracts PDF text with `pypdf`, and summarizes with `allenai/led-large-16384-arxiv`.
 
 ```bash
-python -m pip install -r requirements-streamlit.txt
+python -m pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
+
+Streamlit Community Cloud detects the root `requirements.txt` automatically.
 
 The first summary downloads the LED model. Long papers are split into attention-sized windows and synthesized into one final summary. Uploaded files stay in the local Streamlit process.
 
