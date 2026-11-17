@@ -27,7 +27,7 @@ streamlit run streamlit_app.py
 Streamlit Community Cloud detects the root `requirements.txt` automatically.
 The included `runtime.txt` pins the deployment to Python 3.12 for compatibility with the LED/PyTorch model.
 
-The first summary downloads the LED model. Long papers are split into attention-sized windows and synthesized into one final summary. Uploaded files stay in the local Streamlit process. The hosted default is `allenai/led-base-16384` for lower memory use; set `PAPERLENS_MODEL=allenai/led-large-16384-arxiv` when running on a machine with more memory.
+The hosted default is an evidence-first extractive digest, so the app can run within Streamlit Community Cloud's CPU/memory limits without downloading a model. To use the notebook's LED transformer locally, install `requirements-transformer.txt` and set `PAPERLENS_MODEL=allenai/led-base-16384` (or `allenai/led-large-16384-arxiv` on a larger machine). Long papers are split into attention-sized windows when LED mode is enabled.
 
 ## Current Workflow
 

@@ -19,10 +19,14 @@ from typing import Iterable
 import streamlit as st
 
 
-# The notebook's large arXiv checkpoint can exceed Community Cloud's memory
-# budget during generation. Keep it available as an override, but use the
-# smaller long-context LED checkpoint by default for a reliable hosted app.
-MODEL_NAME = os.getenv("PAPERLENS_MODEL", "allenai/led-base-16384")
+# LED remains available for local machines, but hosted Streamlit instances can
+# disconnect during CPU inference. The default hosted engine is deterministic
+# and lightweight; set PAPERLENS_MODEL to an LED checkpoint to opt in.
+try:
+    _secret_model = st.secrets.get("PAPERLENS_MODEL")
+except Exception:
+    _secret_model = None
+MODEL_NAME = os.getenv("PAPERLENS_MODEL") or _secret_model or "extractive"
 
 
 @dataclass
@@ -91,6 +95,34 @@ def extract_highlights(text: str, limit: int = 6) -> list[str]:
     return [s for _, s in sorted(scored, reverse=True)[:limit]]
 
 
+def extractive_summary(text: str, detail: str) -> str:
+    """Hosted-safe, evidence-first summary that needs no model download."""
+    items = sentences(text)
+    if not items:
+        return "Not enough selectable text was found to summarize this paper."
+    highlights = extract_highlights(text, 10 if detail == "Detailed" else 7 if detail == "Balanced" else 5)
+    method_terms = ("method", "methods", "experiment", "dataset", "participants", "sample", "analysis")
+    result_terms = ("result", "found", "showed", "significant", "effect", "increase", "decrease", "conclude")
+    method = next((s for s in items if any(term in s.lower() for term in method_terms)), None)
+    findings = [s for s in highlights if any(term in s.lower() for term in result_terms)]
+    if not findings:
+        findings = highlights[:3]
+    overview = " ".join(items[:2])
+    lines = [
+        "## Plain-English overview",
+        overview,
+        "",
+        "## What the paper did",
+        method or "The extracted paper text does not contain a clearly labeled methods sentence.",
+        "",
+        "## Evidence and findings",
+    ]
+    lines.extend(f"- {sentence}" for sentence in findings[:5])
+    lines.extend(["", "## High-signal passages"])
+    lines.extend(f"- {sentence}" for sentence in highlights)
+    return "\n".join(lines)
+
+
 def chunk_text(text: str, max_chars: int = 55_000) -> list[str]:
     """Keep each LED call below its 16,384-token window without cutting mid-word."""
     if len(text) <= max_chars:
@@ -109,6 +141,9 @@ def chunk_text(text: str, max_chars: int = 55_000) -> list[str]:
 
 
 def summarize(paper_text: str, detail: str, max_length: int, min_length: int) -> str:
+    if MODEL_NAME == "extractive":
+        return extractive_summary(paper_text, detail)
+
     import torch
 
     tokenizer, model = load_summarizer()
@@ -237,7 +272,10 @@ with st.sidebar:
         max_length, min_length = 300, 100
     else:
         max_length, min_length = 180, 60
-    st.caption(f"Uses `{MODEL_NAME}`. The first run downloads the model and may take a few minutes.")
+    if MODEL_NAME == "extractive":
+        st.caption("Hosted-safe mode: builds an evidence-first digest from the paper text with no model download.")
+    else:
+        st.caption(f"Uses `{MODEL_NAME}`. The first run downloads the model and may take a few minutes.")
     st.markdown("<div class='section-label'>OUTPUT</div>", unsafe_allow_html=True)
     st.checkbox("Show evidence highlights", value=True, key="show_highlights")
     st.checkbox("Show extracted text", value=False, key="show_text")
