@@ -25,6 +25,7 @@ streamlit run streamlit_app.py
 ```
 
 Streamlit Community Cloud detects the root `requirements.txt` automatically.
+The included `runtime.txt` pins the deployment to Python 3.12 for compatibility with the LED/PyTorch model.
 
 The first summary downloads the LED model. Long papers are split into attention-sized windows and synthesized into one final summary. Uploaded files stay in the local Streamlit process.
 
