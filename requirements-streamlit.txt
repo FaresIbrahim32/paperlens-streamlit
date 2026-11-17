@@ -1,2 +1,5 @@
 streamlit>=1.39
 pypdf>=5.0
+transformers>=4.44,<5
+torch>=2.2
+accelerate>=0.34

@@ -26,7 +26,7 @@ try:
     _secret_model = st.secrets.get("PAPERLENS_MODEL")
 except Exception:
     _secret_model = None
-MODEL_NAME = os.getenv("PAPERLENS_MODEL") or _secret_model or "extractive"
+MODEL_NAME = os.getenv("PAPERLENS_MODEL") or _secret_model or "google/flan-t5-small"
 
 
 @dataclass
@@ -181,6 +181,35 @@ def extractive_summary(text: str, detail: str) -> str:
     return "\n".join(lines)
 
 
+def plain_english_prompt(text: str, detail: str) -> str:
+    """Build a compact, source-grounded prompt for a small local seq2seq model."""
+    abstract = section_excerpt(text, ("abstract",), ("keywords", "introduction", "background"))
+    methods = section_excerpt(text, ("3 model architecture", "model architecture", "methods", "methodology", "approach"), ("training", "results", "findings", "discussion", "conclusion"))
+    results = section_excerpt(text, ("6 results", "results", "findings", "evaluation", "machine translation"), ("discussion", "limitations", "conclusion", "references"))
+    conclusion = section_excerpt(text, ("7 conclusion", "conclusion", "conclusions"), ("references", "acknowledgements"))
+    source = "\n\n".join(
+        f"{label}: {value[:2200]}"
+        for label, value in (
+            ("ABSTRACT", abstract),
+            ("APPROACH", methods),
+            ("RESULTS", results),
+            ("CONCLUSION", conclusion),
+        )
+        if value
+    )
+    if not source:
+        source = text[:8000]
+    return (
+        "You are explaining a research paper to an intelligent reader who is not a specialist. "
+        "Write a detailed, accurate plain-English briefing. Do not copy long phrases from the source. "
+        "Explain what problem the paper solves, what the researchers built or tested, what the numbers mean, "
+        "what evidence supports the claims, what the limitations are, and why the work matters. "
+        "Use short paragraphs with these headings: Main idea, How it works, What they found, What to be careful about, Why it matters. "
+        f"Aim for a {detail.lower()} level of detail. If the source does not support a claim, say that clearly.\n\n"
+        f"SOURCE MATERIAL:\n{source}"
+    )
+
+
 def chunk_text(text: str, max_chars: int = 55_000) -> list[str]:
     """Keep each LED call below its 16,384-token window without cutting mid-word."""
     if len(text) <= max_chars:
@@ -202,10 +231,27 @@ def summarize(paper_text: str, detail: str, max_length: int, min_length: int) ->
     if MODEL_NAME == "extractive":
         return extractive_summary(paper_text, detail)
 
-    import torch
-
-    tokenizer, model = load_summarizer()
+    try:
+        import torch
+        tokenizer, model = load_summarizer()
+    except Exception:
+        return extractive_summary(paper_text, detail)
     model_device = next(model.parameters()).device
+    if "led" not in MODEL_NAME.lower():
+        prompt = plain_english_prompt(paper_text, detail)
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+        inputs = {key: value.to(model_device) for key, value in inputs.items()}
+        with torch.inference_mode():
+            generated = model.generate(
+                **inputs,
+                max_new_tokens=max_length,
+                min_new_tokens=max(40, min_length // 2),
+                num_beams=4,
+                length_penalty=1.0,
+                early_stopping=True,
+            )
+        return tokenizer.decode(generated[0], skip_special_tokens=True).strip()
+
     chunks = chunk_text(paper_text)
     outputs = []
     for chunk in chunks:
@@ -331,7 +377,7 @@ with st.sidebar:
     else:
         max_length, min_length = 180, 60
     if MODEL_NAME == "extractive":
-        st.caption("Hosted-safe mode: builds an evidence-first digest from the paper text with no model download.")
+        st.caption("Uses a small local model to rewrite findings into plain English. The first run downloads it.")
     else:
         st.caption(f"Uses `{MODEL_NAME}`. The first run downloads the model and may take a few minutes.")
     st.markdown("<div class='section-label'>OUTPUT</div>", unsafe_allow_html=True)
