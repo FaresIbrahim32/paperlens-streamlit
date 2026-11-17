@@ -73,7 +73,11 @@ def clean_text(text: str) -> str:
 
 
 def sentences(text: str) -> list[str]:
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if len(s.strip()) > 40]
+    return [
+        re.sub(r"^[\-•]+\s*", "", s.strip())
+        for s in re.split(r"(?<=[.!?])\s+", text)
+        if len(s.strip()) > 40
+    ]
 
 
 def extract_highlights(text: str, limit: int = 6) -> list[str]:
@@ -96,15 +100,29 @@ def extract_highlights(text: str, limit: int = 6) -> list[str]:
     return [s for _, s in sorted(scored, reverse=True)[:limit]]
 
 
-def section_excerpt(text: str, label: str, next_labels: Iterable[str]) -> str:
-    """Find a likely paper section without pretending to understand missing text."""
-    following = "|".join(re.escape(item) for item in next_labels)
-    match = re.search(
-        rf"\b{re.escape(label)}\b\s*(.*?)(?=\b(?:{following})\b|$)",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    return match.group(1).strip() if match else ""
+def section_excerpt(text: str, labels: Iterable[str], next_labels: Iterable[str]) -> str:
+    """Extract numbered or named sections without random fallback text."""
+    starts = []
+    for label in labels:
+        match = re.search(
+            rf"(?im)(?:^|\n)\s*(?:\d+(?:\.\d+)*\s+)?{re.escape(label)}\b[^\n]*(?:\n|$)",
+            text,
+        )
+        if match:
+            starts.append(match)
+    if not starts:
+        return ""
+    start = min(starts, key=lambda match: match.start()).end()
+    ends = []
+    for label in next_labels:
+        match = re.search(
+            rf"(?im)(?:^|\n)\s*(?:\d+(?:\.\d+)*\s+)?{re.escape(label)}\b[^\n]*(?:\n|$)",
+            text[start:],
+        )
+        if match:
+            ends.append(start + match.start())
+    end = min(ends) if ends else len(text)
+    return text[start:end].strip()
 
 
 def best_sentences(text: str, limit: int, cues: Iterable[str] = ()) -> list[str]:
@@ -117,10 +135,15 @@ def best_sentences(text: str, limit: int, cues: Iterable[str] = ()) -> list[str]
         lower = sentence.lower()
         score = sum(lower.count(cue) for cue in cue_set) * 3
         score += min(len(sentence.split()) / 45, 1.0)
+        if lower.startswith(("figure ", "table ", "references", "acknowledg")):
+            score -= 5
         if index == 0:
             score += 0.5
         scored.append((score, sentence))
-    return [sentence for _, sentence in sorted(scored, reverse=True)[:limit]]
+    ranked = sorted(scored, reverse=True)
+    if cue_set and (not ranked or ranked[0][0] < 3):
+        return []
+    return [sentence for _, sentence in ranked[:limit]]
 
 
 def extractive_summary(text: str, detail: str) -> str:
@@ -129,14 +152,14 @@ def extractive_summary(text: str, detail: str) -> str:
     if not items:
         return "Not enough selectable text was found to summarize this paper."
     count = 5 if detail == "Detailed" else 3 if detail == "Balanced" else 2
-    abstract = section_excerpt(text, "abstract", ("keywords", "introduction", "background", "1 introduction"))
-    methods = section_excerpt(text, "methods", ("results", "findings", "experiments", "discussion", "conclusion"))
-    results = section_excerpt(text, "results", ("discussion", "limitations", "conclusion", "references"))
-    limitations = section_excerpt(text, "limitations", ("conclusion", "references"))
-    conclusion = section_excerpt(text, "conclusion", ("references", "acknowledgements"))
+    abstract = section_excerpt(text, ("abstract",), ("keywords", "introduction", "background"))
+    methods = section_excerpt(text, ("3 model architecture", "model architecture", "methods", "methodology", "approach", "experimental setup"), ("4 why self-attention", "why self-attention", "5 training", "training", "results", "findings", "discussion", "conclusion"))
+    results = section_excerpt(text, ("6 results", "results", "findings", "evaluation", "machine translation"), ("7 conclusion", "discussion", "limitations", "conclusion", "references"))
+    limitations = section_excerpt(text, ("limitations", "discussion"), ("conclusion", "references"))
+    conclusion = section_excerpt(text, ("7 conclusion", "conclusion", "conclusions"), ("references", "acknowledgements"))
     overview = abstract or " ".join(items[:3])
-    method_sentences = best_sentences(methods or text, count, ("dataset", "participants", "sample", "model", "experiment", "analysis", "trained"))
-    result_sentences = best_sentences(results or text, count + 1, ("result", "found", "showed", "significant", "effect", "increase", "decrease", "improve", "outperform"))
+    method_sentences = best_sentences(methods or text, count, ("dataset", "participants", "sample", "model", "experiment", "analysis", "trained", "attention"))
+    result_sentences = best_sentences(results or text, count + 1, ("result", "found", "showed", "significant", "effect", "increase", "decrease", "improve", "outperform", "bleu"))
     limitation_sentences = best_sentences(limitations or text, min(count, 3), ("limit", "future", "caveat", "however", "bias", "cannot", "small sample"))
     conclusion_sentences = best_sentences(conclusion or text, count, ("conclude", "suggest", "demonstrate", "implication", "future", "important"))
     highlights = extract_highlights(text, 10 if detail == "Detailed" else 7 if detail == "Balanced" else 5)
@@ -146,13 +169,13 @@ def extractive_summary(text: str, detail: str) -> str:
         "",
         "## What the researchers did",
     ]
-    lines.extend(f"- {sentence}" for sentence in method_sentences)
+    lines.extend(f"- {sentence}" for sentence in (method_sentences or ["No clearly labeled methods section was detected in the extracted text."]))
     lines.extend(["", "## Main results"])
-    lines.extend(f"- {sentence}" for sentence in result_sentences)
+    lines.extend(f"- {sentence}" for sentence in (result_sentences or ["No clearly labeled results section was detected in the extracted text."]))
     lines.extend(["", "## Limitations and caveats"])
-    lines.extend(f"- {sentence}" for sentence in limitation_sentences)
+    lines.extend(f"- {sentence}" for sentence in (limitation_sentences or ["The paper does not expose a clearly labeled limitations section in the extracted text."]))
     lines.extend(["", "## Bottom line"])
-    lines.extend(f"- {sentence}" for sentence in conclusion_sentences)
+    lines.extend(f"- {sentence}" for sentence in (conclusion_sentences or ["No clearly labeled conclusion section was detected in the extracted text."]))
     lines.extend(["", "## High-signal passages from the source"])
     lines.extend(f"- {sentence}" for sentence in highlights)
     return "\n".join(lines)
@@ -373,7 +396,9 @@ if paper and summarize_clicked:
 if st.session_state.get("summary"):
     st.markdown("<div class='section-label' style='margin-top:3rem'>02 / YOUR DISTILLATION</div>", unsafe_allow_html=True)
     st.markdown(f"## {st.session_state.get('summary_name', 'Paper summary')}")
-    st.markdown("<div class='summary-card'><div class='eyebrow'>MODEL SYNTHESIS</div>" + st.session_state.summary + "</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown("<div class='eyebrow'>PAPER-SPECIFIC DIGEST</div>", unsafe_allow_html=True)
+        st.markdown(st.session_state.summary)
     if st.session_state.get("show_highlights", True) and st.session_state.get("highlights"):
         st.markdown("### Evidence highlights")
         for item in st.session_state.highlights:
