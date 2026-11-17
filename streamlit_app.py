@@ -10,6 +10,7 @@ Run with:
 from __future__ import annotations
 
 import io
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -18,7 +19,10 @@ from typing import Iterable
 import streamlit as st
 
 
-MODEL_NAME = "allenai/led-large-16384-arxiv"
+# The notebook's large arXiv checkpoint can exceed Community Cloud's memory
+# budget during generation. Keep it available as an override, but use the
+# smaller long-context LED checkpoint by default for a reliable hosted app.
+MODEL_NAME = os.getenv("PAPERLENS_MODEL", "allenai/led-base-16384")
 
 
 @dataclass
@@ -233,7 +237,7 @@ with st.sidebar:
         max_length, min_length = 300, 100
     else:
         max_length, min_length = 180, 60
-    st.caption("Uses LED-large trained for long arXiv papers. The first run downloads the model and may take a few minutes.")
+    st.caption(f"Uses `{MODEL_NAME}`. The first run downloads the model and may take a few minutes.")
     st.markdown("<div class='section-label'>OUTPUT</div>", unsafe_allow_html=True)
     st.checkbox("Show evidence highlights", value=True, key="show_highlights")
     st.checkbox("Show extracted text", value=False, key="show_text")
