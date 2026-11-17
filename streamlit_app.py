@@ -210,6 +210,37 @@ def plain_english_prompt(text: str, detail: str) -> str:
     )
 
 
+def ensure_summary_sections(summary: str) -> str:
+    """Make the small model's output readable even when it ignores formatting."""
+    labels = [
+        "Main idea",
+        "How it works",
+        "What they found",
+        "What to be careful about",
+        "Why it matters",
+    ]
+    cleaned = re.sub(r"\s+", " ", summary).strip()
+    if not cleaned:
+        return "## Main idea\nNo readable summary was returned."
+
+    # Normalize headings the model may emit as "Main idea:" or "MAIN IDEA".
+    for label in labels:
+        cleaned = re.sub(rf"\b{re.escape(label)}\s*:?\s*", f"\n\n## {label}\n", cleaned, flags=re.IGNORECASE)
+    if all(f"## {label}" in cleaned for label in labels):
+        return cleaned.strip()
+
+    # If the model returned one paragraph, distribute its sentences into
+    # readable sections instead of showing an unbroken wall of text.
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    buckets = [[] for _ in labels]
+    for index, part in enumerate(parts):
+        buckets[min(index * len(labels) // max(len(parts), 1), len(labels) - 1)].append(part)
+    sections = []
+    for label, bucket in zip(labels, buckets):
+        sections.append(f"## {label}\n" + " ".join(bucket or ["The generated summary did not provide a separate point here."]))
+    return "\n\n".join(sections)
+
+
 def chunk_text(text: str, max_chars: int = 55_000) -> list[str]:
     """Keep each LED call below its 16,384-token window without cutting mid-word."""
     if len(text) <= max_chars:
@@ -250,7 +281,7 @@ def summarize(paper_text: str, detail: str, max_length: int, min_length: int) ->
                 length_penalty=1.0,
                 early_stopping=True,
             )
-        return tokenizer.decode(generated[0], skip_special_tokens=True).strip()
+        return ensure_summary_sections(tokenizer.decode(generated[0], skip_special_tokens=True).strip())
 
     chunks = chunk_text(paper_text)
     outputs = []
