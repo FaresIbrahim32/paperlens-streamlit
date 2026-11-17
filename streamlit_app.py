@@ -30,10 +30,18 @@ class Paper:
 
 @st.cache_resource(show_spinner=False)
 def load_summarizer():
-    """Load the notebook's LED model once per Streamlit session."""
-    from transformers import pipeline
+    """Load the notebook's LED model once per Streamlit session.
 
-    return pipeline("summarization", model=MODEL_NAME, device_map="auto")
+    The notebook used ``pipeline("summarization", ...)``. Transformers v5
+    removed that pipeline task, so we use the underlying seq2seq model API
+    directly; this keeps the same LED checkpoint and works with v4 and v5.
+    """
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, device_map="auto")
+    model.eval()
+    return tokenizer, model
 
 
 def extract_pdf(uploaded_file) -> tuple[str, int]:
@@ -97,19 +105,58 @@ def chunk_text(text: str, max_chars: int = 55_000) -> list[str]:
 
 
 def summarize(paper_text: str, detail: str, max_length: int, min_length: int) -> str:
-    summarizer = load_summarizer()
+    import torch
+
+    tokenizer, model = load_summarizer()
+    model_device = next(model.parameters()).device
     chunks = chunk_text(paper_text)
     outputs = []
     for chunk in chunks:
-        result = summarizer(chunk, max_length=max_length, min_length=min_length, truncation=True)
-        outputs.append(result[0]["summary_text"].strip())
+        inputs = tokenizer(
+            chunk,
+            return_tensors="pt",
+            truncation=True,
+            max_length=16_384,
+        )
+        inputs = {key: value.to(model_device) for key, value in inputs.items()}
+        global_attention_mask = torch.zeros_like(inputs["input_ids"])
+        global_attention_mask[:, 0] = 1
+        with torch.inference_mode():
+            generated = model.generate(
+                **inputs,
+                global_attention_mask=global_attention_mask,
+                max_new_tokens=max_length,
+                min_new_tokens=min_length,
+                num_beams=4,
+                length_penalty=1.0,
+                early_stopping=True,
+            )
+        outputs.append(tokenizer.decode(generated[0], skip_special_tokens=True).strip())
     if len(outputs) == 1:
         return outputs[0]
     synthesis = "\n\n".join(outputs)
     if len(synthesis) > 55_000:
         synthesis = synthesis[:55_000]
-    result = summarizer(synthesis, max_length=max_length, min_length=min_length, truncation=True)
-    return result[0]["summary_text"].strip()
+    inputs = tokenizer(
+        synthesis,
+        return_tensors="pt",
+        truncation=True,
+        max_length=16_384,
+    )
+    inputs = {key: value.to(model_device) for key, value in inputs.items()}
+    global_attention_mask = torch.zeros_like(inputs["input_ids"])
+    global_attention_mask[:, 0] = 1
+    with torch.inference_mode():
+        generated = model.generate(
+            **inputs,
+            global_attention_mask=global_attention_mask,
+            max_new_tokens=max_length,
+            min_new_tokens=min_length,
+            num_beams=4,
+            length_penalty=1.0,
+            early_stopping=True,
+        )
+    return tokenizer.decode(generated[0], skip_special_tokens=True).strip()
 
 
 def format_number(number: int) -> str:
